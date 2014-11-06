@@ -14,7 +14,7 @@ module Network.Hadoop.Read
     ) where
 
 import           Control.Applicative ((<$>), (<$))
-import           Control.Exception (SomeException, throwIO)
+import           Control.Exception (SomeException)
 import           Control.Monad (foldM)
 import           Control.Monad.Catch (MonadMask, catch)
 import           Control.Monad.IO.Class (MonadIO(..))
@@ -152,16 +152,14 @@ procBlock f proxy blockSize block = do
         b = getField . csBytesPerChecksum <$> c
 
     readPacket bytesPerChecksum stream = do
-        (dataLen, d) <- liftIO $ do
-            _len <- Stream.runGet stream Get.getWord32be
-            sz <- Stream.runGet stream Get.getWord16be
-            bs <- Stream.runGet stream $ Get.getByteString (fromIntegral sz)
-            ph <- decodeBytes bs
+        (dataLen, d) <- liftIO . Stream.runGet stream $ do
+            _len <- Get.getWord32be
+            sz <- Get.getWord16be
+            ph <- Get.isolate (fromIntegral sz) decodeMessage
             let numChunks = countChunks ph
                 dataLen = getField $ phDataLen ph
-            _ <- Stream.runGet stream (Get.getByteString (4*numChunks))
-            (dataLen,) <$>
-                Stream.runGet stream (Get.getByteString (fromIntegral dataLen))
+            _ <- Get.getByteString (4*numChunks)
+            (dataLen,) <$> Get.getByteString (fromIntegral dataLen)
         get >>= \x -> lift (f x d) >>= put
         return (fromIntegral dataLen)
       where
@@ -170,8 +168,3 @@ procBlock f proxy blockSize block = do
           where
             b = fromMaybe 512 bytesPerChecksum
             dataLen = fromIntegral $ getField phDataLen
-
-    decodeBytes bs = case Get.runGetState decodeMessage bs 0 of
-        Left err      -> throwIO (RemoteError "DecodeError" (T.pack err))
-        Right (x, "") -> return x
-        Right (_, _)  -> throwIO (RemoteError "DecodeError" "decoded response but did not consume enough bytes")
